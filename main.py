@@ -440,9 +440,6 @@ class Ball:
         self.siphon_start_radius = self.radius
         self.siphon_vx = vx
         self.siphon_vy = vy
-        # 말라리아 모기공은 흡혈한 적을 기억해 같은 적을 반복 방문하지 않는다.
-        self.malaria_hit_ids = set()
-        self.malaria_power = 1.0
 
     def draw(self, surface):
         x, y, r = int(self.x), int(self.y), self.radius
@@ -620,14 +617,12 @@ class Game:
         self.skills = {}
         self.ultimate_acquisitions = 0
         self.pending_levelup = False
-        # 관문 클리어 후 다음 관문으로 넘어갈 때 성장 상태를 이어받는다.
-        self.carryover_ready = False
         
         self.blocks = []
         self.balls = []
         self.mosquito_ball_count = 0
         self.malaria_ball_count = 0
-        self.mosquito_eggs = []  # 다음 턴 시작 시 부화할 알
+        self.mosquito_eggs = []  # 기존 말라리아 알 효과
         self.particles = []
         self.lasers = []
         self.laser_trails = []  # 레이저공이 남긴 선분: 공 회수 후에도 다음 턴까지 유지
@@ -645,38 +640,23 @@ class Game:
     def start_chapter(self, chap):
         self.stage = chap["start_stage"]
         self.target_max_stage = chap["max_stage"]
-
-        # 첫 관문은 기본 상태로 시작하고, 이전 관문을 클리어한 뒤라면
-        # 레벨/경험치/최대 경험치/공 구성/획득 스킬을 그대로 이어받는다.
-        if not self.carryover_ready:
-            self.level = 1
-            self.exp = 0
-            self.max_exp = 30
-            self.base_ball_count = 5
-            self.skills = {}
-            self.ultimate_acquisitions = 0
-            self.mosquito_ball_count = 0
-            self.malaria_ball_count = 0
-            self.pending_levelup = False
-
-        # carryover_ready가 True일 때는 미처 선택하지 못한 레벨업도 보존한다.
-        self.carryover_ready = False
-
-        # 전투 필드와 진행 중인 투사체만 새 관문에 맞게 초기화한다.
-        # 공의 종류와 수량은 위에서 보존한 성장 데이터로 다시 구성된다.
+        self.level = 1
+        self.exp = 0
+        self.max_exp = 30
+        self.base_ball_count = 5
+        self.skills.clear()
+        self.ultimate_acquisitions = 0
+        self.pending_levelup = False
         self.blocks.clear()
         self.balls.clear()
+        self.mosquito_ball_count = 0
+        self.malaria_ball_count = 0
         self.mosquito_eggs.clear()
         self.particles.clear()
         self.lasers.clear()
         self.laser_trails.clear()
-        self.spawn_queue.clear()
         self.setup_stage()
-        if self.pending_levelup:
-            self.pending_levelup = False
-            self.trigger_level_up()
-        else:
-            self.state = "AIMING"
+        self.state = "AIMING"
 
     def setup_stage(self):
         self.blocks.clear()
@@ -740,24 +720,6 @@ class Game:
                 self.particles.append(Particle(ex + math.cos(angle) * dist,
                                                ey + math.sin(angle) * dist,
                                                (205, 45, 80)))
-
-    def continue_malaria_chain(self, ball):
-        """가장 가까운 미흡혈 적에게 말라리아 모기공을 날려 보낸다."""
-        candidates = [b for b in self.blocks if id(b) not in ball.malaria_hit_ids]
-        if not candidates:
-            ball.attached_block = None
-            ball.vx = ball.siphon_vx * 0.8
-            ball.vy = ball.siphon_vy * 0.8
-            return
-        target = min(candidates, key=lambda b: math.hypot(
-            b.get_rect().centerx - ball.x, b.get_rect().centery - ball.y))
-        rect = target.get_rect()
-        dx, dy = rect.centerx - ball.x, rect.centery - ball.y
-        distance = max(1.0, math.hypot(dx, dy))
-        speed = max(6.0, math.hypot(ball.siphon_vx, ball.siphon_vy))
-        ball.vx, ball.vy = dx / distance * speed, dy / distance * speed
-        ball.attached_block = None
-        ball.last_siphoned_block = None
 
     def spawn_new_row(self):
         # 기존 적을 한 칸 아래로 이동시킨 직후 방어선 침범 여부를 검사한다.
@@ -835,11 +797,11 @@ class Game:
         elif s_id == "ULTIMATE":
             self.ultimate_acquisitions += 1
         elif s_id == "MOSQUITO":
-            # 모기공을 선택하면 60% 확률로 말라리아 모기공으로 각성한다.
+            # 모기공을 선택하면 40% 확률로 말라리아 모기공으로 각성한다.
             self.skills[s_id] = self.skills.get(s_id, 0) + 1
-            if random.random() < 0.60:
+            if random.random() < 0.40:
                 self.malaria_ball_count += 1
-                self.chapter_status_msg = "각성! 말라리아 모기공 획득! (60%)"
+                self.chapter_status_msg = "각성! 말라리아 모기공 획득! (40%)"
                 awakened = True
             else:
                 self.mosquito_ball_count += 1
@@ -934,8 +896,6 @@ class Game:
         if self.stage >= self.target_max_stage and not any(b.type == "boss" for b in self.blocks):
             chap = CHAPTERS[self.selected_chapter_idx]
             self.cleared_chapters.add(chap["id"])
-            # 다음 관문 진입 시 현재 레벨과 공/스킬 구성을 이어받도록 표시한다.
-            self.carryover_ready = True
             # 목표 스테이지(예: 20스테이지)까지 보스를 처치하면 보상 2배.
             # 목표 스테이지를 넘긴 뒤 처치하면 기본 보상만 지급한다.
             self.victory_reward = 600 if self.stage <= self.target_max_stage else 300
@@ -1011,8 +971,7 @@ class Game:
 
             # 모기공은 벽에 부딪히면 즉시 달라붙어 3초간 흡혈한다.
             if (ball.type in ("MOSQUITO", "MALARIA") and ball.attached_block is None
-                    and block is not ball.last_siphoned_block
-                    and (ball.type != "MALARIA" or id(block) not in ball.malaria_hit_ids)):
+                    and block is not ball.last_siphoned_block):
                 ball.attached_block = block
                 ball.attach_started = pygame.time.get_ticks()
                 ball.siphon_damage_applied = 0
@@ -1223,7 +1182,7 @@ class Game:
             for ball in list(self.balls):
                 if ball not in self.balls:
                     continue
-                if ball.type == "MOSQUITO" and ball.attached_block is not None:
+                if ball.type in ("MOSQUITO", "MALARIA") and ball.attached_block is not None:
                     now = pygame.time.get_ticks()
                     target = ball.attached_block
                     if target not in self.blocks:
@@ -1239,7 +1198,7 @@ class Game:
                     # 3초 동안 최대 체력의 30% + 강화 단계당 5%를 흡수한다.
                     base_siphon = 0.30 + mosquito_level * 0.05
                     if ball.type == "MALARIA":
-                        base_siphon *= ball.malaria_power
+                        base_siphon *= 2.0
                     total_siphon = max(1, int(target.max_hp * base_siphon))
                     desired_damage = int(total_siphon * (elapsed_attach / 3.0))
                     damage_delta = desired_damage - ball.siphon_damage_applied
@@ -1250,20 +1209,28 @@ class Game:
                     ball.radius = int(ball.siphon_start_radius + (6 + mosquito_level) * (elapsed_attach / 3.0))
                     if target not in self.blocks or elapsed_attach >= 3.0:
                         ball.last_siphoned_block = target
-                        if ball.type == "MALARIA":
-                            ball.malaria_hit_ids.add(id(target))
-                            ball.malaria_power += 0.20
-                            # 흡혈을 마칠 때마다 8% 확률로 알을 남긴다.
-                            if random.random() < 0.08:
-                                self.mosquito_eggs.append({"x": ball.x, "y": ball.y})
-                                for _ in range(8):
-                                    self.particles.append(Particle(ball.x, ball.y, (255, 180, 90)))
-                            self.continue_malaria_chain(ball)
-                        else:
-                            ball.attached_block = None
-                            ball.vx = ball.siphon_vx * 0.8
-                            ball.vy = ball.siphon_vy * 0.8
+                        ball.attached_block = None
+                        ball.vx = ball.siphon_vx * 0.8
+                        ball.vy = ball.siphon_vy * 0.8
                     continue
+
+                # 주변 한 칸 안에 적이 있을 때만 가장 가까운 적을 향해 이동
+                if ball.type == "MALARIA" and self.blocks:
+                    nearby = []
+                    seek_range = TILE_WIDTH * 1.5
+                    for enemy in self.blocks:
+                        enemy_rect = enemy.get_rect()
+                        distance = math.hypot(enemy_rect.centerx - ball.x,
+                                              enemy_rect.centery - ball.y)
+                        if distance <= seek_range:
+                            nearby.append((distance, enemy_rect.centerx, enemy_rect.centery))
+                    if nearby:
+                        _, target_x, target_y = min(nearby, key=lambda item: item[0])
+                        dx, dy = target_x - ball.x, target_y - ball.y
+                        distance = max(1.0, math.hypot(dx, dy))
+                        current_speed = max(6.0, math.hypot(ball.vx, ball.vy))
+                        ball.vx = dx / distance * current_speed
+                        ball.vy = dy / distance * current_speed
 
                 if ball.type == "SPEED":
                     elapsed = max(0.0, (pygame.time.get_ticks() - ball.created_at) / 1000.0)
@@ -1868,7 +1835,7 @@ class Game:
 
         title = FONT_TITLE.render("말라리아 모기공 각성!", True, (255, 105, 135))
         screen.blit(title, title.get_rect(center=(cx, cy + 92)))
-        subtitle = FONT_MED.render("60% 확률 각성 성공 · 새로운 모기공을 획득했습니다", True, (255, 225, 230))
+        subtitle = FONT_MED.render("40% 확률 각성 성공 · 새로운 모기공을 획득했습니다", True, (255, 225, 230))
         screen.blit(subtitle, subtitle.get_rect(center=(cx, cy + 132)))
 
         # 아래쪽 진행 표시로 연출이 끝나는 시점을 알려준다.
@@ -1924,7 +1891,7 @@ class Game:
             screen.blit(FONT_MED.render(sk["name"], True, (40, 90, 180)), (card.left + 10, card.top + 10))
             screen.blit(FONT_SMALL.render(sk["desc"], True, (40, 50, 70)), (card.left + 10, card.top + 38))
             if sk["id"] == "MOSQUITO":
-                chance_txt = FONT_SMALL.render("60% 확률로 말라리아 모기공 각성!", True, (205, 55, 85))
+                chance_txt = FONT_SMALL.render("40% 확률로 말라리아 모기공 각성!", True, (205, 55, 85))
                 screen.blit(chance_txt, (card.left + 10, card.top + 57))
             self.skill_btns.append((card, sk))
 
