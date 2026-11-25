@@ -440,6 +440,9 @@ class Ball:
         self.siphon_start_radius = self.radius
         self.siphon_vx = vx
         self.siphon_vy = vy
+        # 말라리아공마다 독립적인 추적 목표와 접근 방향을 보유
+        self.malaria_target = None
+        self.malaria_target_offset = (random.uniform(-0.18, 0.18), random.uniform(-0.18, 0.18))
 
     def draw(self, surface):
         x, y, r = int(self.x), int(self.y), self.radius
@@ -538,6 +541,13 @@ class Game:
         self.loading_progress = 0.0
         
         self.main_tab = "LOBBY"
+
+        # 개발자 코드 팝업 및 코하루 모드
+        self.dev_code_btn = pygame.Rect(25, HEIGHT - 105, 112, 32)
+        self.dev_code_input_rect = pygame.Rect(WIDTH // 2 - 125, HEIGHT // 2 - 5, 250, 38)
+        self.dev_code_text = ""
+        self.dev_code_message = ""
+        self.koharu_dev_enabled = False
         
         # 재화 및 계정 데이터
         self.diamonds = 2500
@@ -849,6 +859,10 @@ class Game:
         if self.ultimate_acquisitions > 0:
             ball_types.extend(["ULTIMATE"] * (self.ultimate_acquisitions * 2))
 
+        # 코하루 개발자 코드가 활성화되면 모든 구체를 말라리아 모기공으로 변경
+        if self.koharu_dev_enabled:
+            ball_types = ["MALARIA"] * len(ball_types)
+
         for i, t in enumerate(ball_types):
             self.spawn_queue.append((t, i * 3))
 
@@ -1141,7 +1155,7 @@ class Game:
                 self.state = "MAIN_MENU"
             return
 
-        if self.state in ["MAIN_MENU", "STAGE_SELECT", "SHOP", "EVENT", "QUEST", "GACHA"]:
+        if self.state in ["MAIN_MENU", "DEV_CODE", "STAGE_SELECT", "SHOP", "EVENT", "QUEST", "GACHA"]:
             return
 
         if self.state == "AWAKENING":
@@ -1214,18 +1228,43 @@ class Game:
                         ball.vy = ball.siphon_vy * 0.8
                     continue
 
-                # 주변 한 칸 안에 적이 있을 때만 가장 가까운 적을 향해 이동
+                # 말라리아공은 각자 목표를 기억한다. 가능하면 다른 공이
+                # 이미 노리는 적은 피하고, 목표가 사라지면 새 목표를 선택한다.
                 if ball.type == "MALARIA" and self.blocks:
-                    nearby = []
                     seek_range = TILE_WIDTH * 1.5
-                    for enemy in self.blocks:
-                        enemy_rect = enemy.get_rect()
-                        distance = math.hypot(enemy_rect.centerx - ball.x,
-                                              enemy_rect.centery - ball.y)
-                        if distance <= seek_range:
-                            nearby.append((distance, enemy_rect.centerx, enemy_rect.centery))
-                    if nearby:
-                        _, target_x, target_y = min(nearby, key=lambda item: item[0])
+                    other_targets = {
+                        other.malaria_target for other in self.balls
+                        if other is not ball and other.type == "MALARIA"
+                        and other.malaria_target in self.blocks
+                    }
+
+                    if ball.malaria_target not in self.blocks:
+                        ball.malaria_target = None
+
+                    # 현재 목표가 너무 멀어졌다면 다시 탐색
+                    if ball.malaria_target is not None:
+                        tr = ball.malaria_target.get_rect()
+                        target_distance = math.hypot(tr.centerx - ball.x, tr.centery - ball.y)
+                        if target_distance > seek_range * 2.2:
+                            ball.malaria_target = None
+
+                    if ball.malaria_target is None:
+                        candidates = []
+                        for enemy in self.blocks:
+                            er = enemy.get_rect()
+                            distance = math.hypot(er.centerx - ball.x, er.centery - ball.y)
+                            if distance <= seek_range:
+                                # 아직 다른 말라리아공이 선택하지 않은 적을 우선
+                                candidates.append((enemy in other_targets, distance, random.random(), enemy))
+                        if candidates:
+                            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+                            ball.malaria_target = candidates[0][3]
+
+                    if ball.malaria_target is not None:
+                        target_rect = ball.malaria_target.get_rect()
+                        ox, oy = ball.malaria_target_offset
+                        target_x = target_rect.centerx + target_rect.width * ox
+                        target_y = target_rect.centery + target_rect.height * oy
                         dx, dy = target_x - ball.x, target_y - ball.y
                         distance = max(1.0, math.hypot(dx, dy))
                         current_speed = max(6.0, math.hypot(ball.vx, ball.vy))
@@ -1388,7 +1427,7 @@ class Game:
             return
 
         # 메인 화면 및 메뉴들
-        if self.state in ["MAIN_MENU", "STAGE_SELECT", "SHOP", "EVENT", "QUEST", "GACHA"]:
+        if self.state in ["MAIN_MENU", "DEV_CODE", "STAGE_SELECT", "SHOP", "EVENT", "QUEST", "GACHA"]:
             # 상단바
             pygame.draw.rect(screen, (255, 255, 255), (0, 0, WIDTH, HEADER_HEIGHT))
             pygame.draw.line(screen, (210, 220, 235), (0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT), 2)
@@ -1425,6 +1464,15 @@ class Game:
                 pygame.draw.rect(screen, (60, 130, 230), self.stage_start_btn, border_radius=10)
                 start_txt = FONT_LARGE.render("벽돌부수기 시작", True, (255, 255, 255))
                 screen.blit(start_txt, start_txt.get_rect(center=self.stage_start_btn.center))
+
+                # 작은 보라색 개발자 코드 버튼
+                pygame.draw.rect(screen, (145, 75, 195), self.dev_code_btn, border_radius=7)
+                pygame.draw.rect(screen, (205, 160, 235), self.dev_code_btn, 1, border_radius=7)
+                dev_txt = FONT_TINY.render("개발자 코드", True, (255, 255, 255))
+                screen.blit(dev_txt, dev_txt.get_rect(center=self.dev_code_btn.center))
+                if self.koharu_dev_enabled:
+                    active_txt = FONT_TINY.render("코하루 모드 활성화", True, (145, 75, 195))
+                    screen.blit(active_txt, (content_rect.x + 25, content_rect.bottom - 38))
 
             elif self.main_tab == "INVENTORY":
                 inv_t = FONT_LARGE.render("인벤토리 & 테마 장착", True, (40, 90, 180))
@@ -1699,6 +1747,29 @@ class Game:
                 screen.blit(FONT_MED.render("관문으로 진입", True, (45, 30, 10)), (self.enter_stage_btn.centerx - 48, self.enter_stage_btn.centery - 18))
                 screen.blit(FONT_SMALL.render("🍙 x5", True, (65, 45, 15)), (self.enter_stage_btn.centerx - 18, self.enter_stage_btn.centery + 4))
 
+            if self.state == "DEV_CODE":
+                shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                shade.fill((15, 10, 25, 155))
+                screen.blit(shade, (0, 0))
+                popup = pygame.Rect(WIDTH // 2 - 155, HEIGHT // 2 - 105, 310, 210)
+                pygame.draw.rect(screen, (250, 247, 255), popup, border_radius=14)
+                pygame.draw.rect(screen, (155, 90, 205), popup, 3, border_radius=14)
+                title = FONT_LARGE.render("개발자코드", True, (110, 55, 155))
+                screen.blit(title, title.get_rect(center=(popup.centerx, popup.top + 35)))
+                hint = FONT_SMALL.render("코드를 입력한 뒤 Enter를 누르세요", True, (90, 80, 105))
+                screen.blit(hint, hint.get_rect(center=(popup.centerx, popup.top + 72)))
+                pygame.draw.rect(screen, (255, 255, 255), self.dev_code_input_rect, border_radius=6)
+                pygame.draw.rect(screen, (155, 90, 205), self.dev_code_input_rect, 2, border_radius=6)
+                shown = self.dev_code_text if self.dev_code_text else "코드 입력..."
+                shown_color = (45, 35, 55) if self.dev_code_text else (160, 150, 170)
+                input_txt = FONT_MED.render(shown, True, shown_color)
+                screen.blit(input_txt, (self.dev_code_input_rect.x + 10, self.dev_code_input_rect.y + 9))
+                if self.dev_code_message:
+                    msg = FONT_TINY.render(self.dev_code_message, True, (190, 55, 85))
+                    screen.blit(msg, msg.get_rect(center=(popup.centerx, popup.bottom - 45)))
+                close_hint = FONT_TINY.render("Enter: 확인   Esc: 닫기", True, (115, 105, 125))
+                screen.blit(close_hint, close_hint.get_rect(center=(popup.centerx, popup.bottom - 20)))
+
             pygame.display.flip()
             return
 
@@ -1909,6 +1980,30 @@ def main():
                     if game.state == "FIRING":
                         game.recall_balls()
 
+            if event.type == pygame.TEXTINPUT and game.state == "DEV_CODE":
+                if len(game.dev_code_text) < 20:
+                    game.dev_code_text += event.text
+                continue
+
+            if event.type == pygame.KEYDOWN and game.state == "DEV_CODE":
+                if event.key == pygame.K_ESCAPE:
+                    game.state = "MAIN_MENU"
+                    game.dev_code_message = ""
+                    pygame.key.stop_text_input()
+                elif event.key == pygame.K_BACKSPACE:
+                    game.dev_code_text = game.dev_code_text[:-1]
+                elif event.key == pygame.K_RETURN:
+                    if game.dev_code_text.strip() == "코하루":
+                        game.koharu_dev_enabled = True
+                        game.dev_code_message = "코하루 모드가 활성화되었습니다!"
+                        game.state = "MAIN_MENU"
+                        game.dev_code_text = ""
+                        pygame.key.stop_text_input()
+                    else:
+                        game.dev_code_message = "올바르지 않은 코드입니다."
+                        game.dev_code_text = ""
+                continue
+
             if event.type == pygame.MOUSEWHEEL:
                 # 상점에서 마우스 휠로 상품이 구매되거나 수량이 바뀌지 않도록 무시
                 continue
@@ -1921,6 +2016,9 @@ def main():
 
                 if game.state == "TOUCH_START":
                     game.state = "TRANSITION"
+                    continue
+
+                if game.state == "DEV_CODE":
                     continue
 
                 # 공통 팝업 창들의 닫기(X) 버튼 처리
@@ -2052,6 +2150,12 @@ def main():
                     continue
 
                 if game.state in ["MAIN_MENU"]:
+                    if game.main_tab == "LOBBY" and game.dev_code_btn.collidepoint(mx, my):
+                        game.state = "DEV_CODE"
+                        game.dev_code_text = ""
+                        game.dev_code_message = ""
+                        pygame.key.start_text_input()
+                        continue
                     if game.shop_btn.collidepoint(mx, my):
                         game.state = "SHOP"
                         game.shop_msg = ""
